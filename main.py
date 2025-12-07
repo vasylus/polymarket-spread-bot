@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -207,14 +208,25 @@ def main() -> None:
                 continue
 
             for m in markets:
-                # ВАЖНО: поле называется clobTokenIds в Gamma
-                token_ids = m.get("clobTokenIds") or m.get("clob_token_ids") or []
+                # clobTokenIds приходит как строка с JSON, типа '["id1","id2"]'
+                token_ids_raw = m.get("clobTokenIds") or m.get("clob_token_ids") or []
+                log(f"[main] Raw clobTokenIds: {token_ids_raw}")
+
+                if isinstance(token_ids_raw, str):
+                    try:
+                        token_ids = json.loads(token_ids_raw)
+                    except Exception as e:
+                        log(f"[main] Не удалось распарсить clobTokenIds: {e}")
+                        token_ids = []
+                else:
+                    token_ids = token_ids_raw
+
                 if not token_ids:
                     continue
 
                 question = m.get("question") or m.get("slug") or "No title"
                 market_id = m.get("id", "unknown")
-                log(f"[main] Маркет {market_id}, question='{question[:60]}', clobTokenIds={token_ids}")
+                log(f"[main] Маркет {market_id}, question='{question[:60]}', token_ids={token_ids}")
 
                 for token_id in token_ids:
                     now = time.time()
