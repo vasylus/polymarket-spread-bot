@@ -39,7 +39,7 @@ ORDERBOOK_URL = "https://clob.polymarket.com/book"
 
 
 def send_telegram_raw(text: str) -> None:
-    """Базовая отправка сообщения в Telegram, без логов и префиксов."""
+    """Базовая отправка сообщения в Telegram, без логирования."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -56,14 +56,13 @@ def send_telegram_raw(text: str) -> None:
 
 
 def log(msg: str) -> None:
-    """Лог: и в stdout, и (опционально) в Telegram."""
+    """Лог: в stdout и опционально в Telegram."""
     try:
         print(msg)
     except Exception:
         pass
 
     if DEBUG_TO_TELEGRAM and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        # режем до разумной длины, чтобы не словить лимиты
         short = msg
         if len(short) > 3500:
             short = short[:3500] + "...(truncated)"
@@ -208,16 +207,19 @@ def main() -> None:
                 continue
 
             for m in markets:
-                token_ids = m.get("clob_token_ids") or []
+                # ВАЖНО: поле называется clobTokenIds в Gamma
+                token_ids = m.get("clobTokenIds") or m.get("clob_token_ids") or []
                 if not token_ids:
                     continue
 
                 question = m.get("question") or m.get("slug") or "No title"
                 market_id = m.get("id", "unknown")
+                log(f"[main] Маркет {market_id}, question='{question[:60]}', clobTokenIds={token_ids}")
 
                 for token_id in token_ids:
                     now = time.time()
                     if token_id in last_alert_ts and now - last_alert_ts[token_id] < 300:
+                        # не спамим по одному и тому же токену чаще, чем раз в 5 минут
                         continue
 
                     ob = fetch_orderbook(token_id)
