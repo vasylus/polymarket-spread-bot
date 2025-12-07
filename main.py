@@ -41,7 +41,7 @@ ORDERBOOK_URL = "https://clob.polymarket.com/book"
 def send_telegram_message(text: str) -> None:
     """Отправка сообщения в Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Не задан TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID")
+        print("Не задан TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID (send_telegram_message)")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -54,6 +54,8 @@ def send_telegram_message(text: str) -> None:
         resp = requests.post(url, data=data, timeout=10)
         if resp.status_code != 200:
             print("Ошибка Telegram:", resp.status_code, resp.text[:200])
+        else:
+            print("Сообщение в Telegram отправлено успешно")
     except Exception as e:
         print("Ошибка отправки в Telegram:", e)
 
@@ -71,18 +73,25 @@ def fetch_markets() -> List[Dict[str, Any]]:
     if ONLY_OPEN_MARKETS:
         params["closed"] = "false"
 
+    print(f"[fetch_markets] Делаем запрос к {GAMMA_MARKETS_URL} c params={params}")
+
     try:
         resp = requests.get(GAMMA_MARKETS_URL, params=params, timeout=15)
+        print(f"[fetch_markets] HTTP статус: {resp.status_code}")
         resp.raise_for_status()
         data = resp.json()
-        # Gamma /markets возвращает список маркетов
+        print(f"[fetch_markets] Тип ответа: {type(data)}")
+
+        # Gamma /markets чаще всего возвращает список маркетов
         if isinstance(data, list):
+            print(f"[fetch_markets] Получен список из {len(data)} маркетов (list)")
             return data
         elif isinstance(data, dict):
-            # На всякий случай, если обёрнуто
-            return data.get("data", [])
+            markets = data.get("data", [])
+            print(f"[fetch_markets] Получен dict, в data {len(markets)} маркетов")
+            return markets
         else:
-            print("Неожиданный формат ответа markets:", type(data))
+            print("[fetch_markets] Неожиданный формат ответа:", type(data))
             return []
     except Exception as e:
         print("Ошибка загрузки рынков:", e)
@@ -95,12 +104,14 @@ def fetch_orderbook(token_id: str) -> Optional[Dict[str, Any]]:
     """
     try:
         params = {"token_id": token_id}
+        print(f"[fetch_orderbook] Запрос ордербука для token_id={token_id}")
         resp = requests.get(ORDERBOOK_URL, params=params, timeout=15)
+        print(f"[fetch_orderbook] HTTP статус: {resp.status_code} для token_id={token_id}")
         if resp.status_code != 200:
-            # Часто 404, если по токену нет книги — не критично
-            # print(f"Orderbook {token_id} status {resp.status_code}")
+            # 404 и прочее не считаем критической ошибкой
             return None
-        return resp.json()
+        data = resp.json()
+        return data
     except Exception as e:
         print(f"Ошибка загрузки ордербука token_id={token_id}:", e)
         return None
@@ -115,10 +126,10 @@ def best_bid_ask(orderbook: Dict[str, Any]) -> Tuple[Optional[float], Optional[f
     asks = orderbook.get("asks", [])
 
     if not bids or not asks:
+        print("[best_bid_ask] Пустые bids или asks")
         return None, None, 0.0, 0.0
 
     def parse_price_size(level: Dict[str, str]) -> Tuple[float, float]:
-        # в API price/size — строки
         try:
             return float(level.get("price", "0")), float(level.get("size", "0"))
         except Exception:
@@ -141,6 +152,7 @@ def best_bid_ask(orderbook: Dict[str, Any]) -> Tuple[Optional[float], Optional[f
             best_ask_price, best_ask_size = p, s
 
     if best_bid_price <= 0 or best_ask_price is None or best_ask_price <= 0:
+        print("[best_bid_ask] Не удалось найти валидные bid/ask")
         return None, None, 0.0, 0.0
 
     return best_bid_price, best_ask_price, best_bid_size, best_ask_size
@@ -157,10 +169,23 @@ def calc_max_size_for_bank(price: float, bank: float) -> float:
 
 
 def main() -> None:
+    print(">>> main() стартанул")
+
+    print(
+        f"Текущие настройки:\n"
+        f"  BANK_USD = {BANK_USD}\n"
+        f"  MIN_SPREAD = {MIN_SPREAD}\n"
+        f"  MIN_PROFIT_USD = {MIN_PROFIT_USD}\n"
+        f"  POLL_INTERVAL = {POLL_INTERVAL}\n"
+        f"  MAX_MARKETS = {MAX_MARKETS}\n"
+        f"  ONLY_OPEN_MARKETS = {ONLY_OPEN_MARKETS}\n"
+    )
+
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("⚠️ Внимание: TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не установлены.")
         print("Бот запустится, но не сможет слать сообщения.")
     else:
+        print("Пробуем отправить стартовое сообщение в Telegram...")
         send_telegram_message("🚀 Polymarket спред-бот запущен на Render.")
 
     print("Бот запущен. Начинаю опрос рынков...")
@@ -170,16 +195,16 @@ def main() -> None:
 
     while True:
         try:
+            print("\n[main] Новый цикл опроса...")
             markets = fetch_markets()
-            print(f"Загружено маркетов: {len(markets)}")
+            print(f"[main] Загружено маркетов: {len(markets)}")
 
             if not markets:
+                print("[main] Маркеты не получены, спим...")
                 time.sleep(POLL_INTERVAL)
                 continue
 
             for m in markets:
-                # Gamma markets формата:
-                # { id, question, clob_token_ids: [ "...", "..." ], ... }
                 token_ids = m.get("clob_token_ids") or []
                 if not token_ids:
                     continue
@@ -188,9 +213,9 @@ def main() -> None:
                 market_id = m.get("id", "unknown")
 
                 for token_id in token_ids:
-                    # антиспам: не слать по одному и тому же токену чаще, чем раз в 5 минут
                     now = time.time()
                     if token_id in last_alert_ts and now - last_alert_ts[token_id] < 300:
+                        # не спамим по одному и тому же токену чаще, чем раз в 5 минут
                         continue
 
                     ob = fetch_orderbook(token_id)
@@ -205,11 +230,9 @@ def main() -> None:
                     if spread < MIN_SPREAD:
                         continue
 
-                    # считаем объём, который можно провернуть под твой банк
                     max_size_bid = calc_max_size_for_bank(bid, BANK_USD)
                     max_size_ask = calc_max_size_for_bank(ask, BANK_USD)
 
-                    # реальный лимит по ликвидности
                     tradable_size = min(bid_size, ask_size, max_size_bid, max_size_ask)
                     if tradable_size <= 0:
                         continue
@@ -236,14 +259,16 @@ def main() -> None:
                         "⚠️ Это только сигнал по спреду. Торговля руками и на свой риск."
                     )
 
-                    print(text.replace("\n", " ")[:300] + "...")
+                    # печатаем сокращённый вариант в лог
+                    print("[ALERT] " + text.replace("\n", " ")[:300] + "...")
                     send_telegram_message(text)
 
+            print(f"[main] Цикл окончен, спим {POLL_INTERVAL} секунд...")
             time.sleep(POLL_INTERVAL)
 
         except Exception as e:
             print("Ошибка в основном цикле:", e)
-            # чтобы бот не умер от единственной ошибки
+            print(f"[main] Ждём {POLL_INTERVAL} секунд и пробуем снова...")
             time.sleep(POLL_INTERVAL)
 
 
