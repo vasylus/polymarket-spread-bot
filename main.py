@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 # ================== НАСТРОЙКИ ЧЕРЕЗ ENV ==================
 
 TELEGRAM_BOT_TOKEN = os.environ.get("8081830319:AAGnsV0M5TKGcobd-W2GZGjupKCNW6G41Yc")
-TELEGRAM_CHAT_ID = os.environ.get("@polymarketspreadbot")
+TELEGRAM_CHAT_ID = os.environ.get("360859773")
 
 # твой банк
 BANK_USD = float(os.environ.get("BANK_USD", "980"))
