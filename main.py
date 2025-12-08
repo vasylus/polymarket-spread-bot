@@ -18,6 +18,9 @@ MIN_SPREAD = float(os.environ.get("MIN_SPREAD", "0.03"))
 # минимальный ожидаемый профит, чтобы не спамить (в $)
 MIN_PROFIT_USD = float(os.environ.get("MIN_PROFIT_USD", "10"))
 
+# минимальный объем рынка (суммарный), в $
+MIN_VOLUME_USD = float(os.environ.get("MIN_VOLUME_USD", "1000000"))
+
 # как часто опрашивать API (в секундах)
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "20"))
 
@@ -180,6 +183,7 @@ def main() -> None:
         f"  BANK_USD = {BANK_USD}\n"
         f"  MIN_SPREAD = {MIN_SPREAD}\n"
         f"  MIN_PROFIT_USD = {MIN_PROFIT_USD}\n"
+        f"  MIN_VOLUME_USD = {MIN_VOLUME_USD}\n"
         f"  POLL_INTERVAL = {POLL_INTERVAL}\n"
         f"  MAX_MARKETS = {MAX_MARKETS}\n"
         f"  ONLY_OPEN_MARKETS = {ONLY_OPEN_MARKETS}\n"
@@ -208,30 +212,88 @@ def main() -> None:
                 continue
 
             for m in markets:
-                # clobTokenIds приходит как строка с JSON, типа '["id1","id2"]'
-                token_ids_raw = m.get("clobTokenIds") or m.get("clob_token_ids") or []
-                log(f"[main] Raw clobTokenIds: {token_ids_raw}")
+                # ------- ОБЪЁМ РЫНКА / ФИЛЬТР ПО ОБЪЁМУ -------
+                volume_raw = (
+                    m.get("volumeNum")
+                    or m.get("volumeClob")
+                    or m.get("volumeAmm")
+                    or m.get("volume")
+                    or 0
+                )
+                try:
+                    volume_num = float(volume_raw)
+                except (TypeError, ValueError):
+                    volume_num = 0.0
 
-                if isinstance(token_ids_raw, str):
-                    try:
-                        token_ids = json.loads(token_ids_raw)
-                    except Exception as e:
-                        log(f"[main] Не удалось распарсить clobTokenIds: {e}")
-                        token_ids = []
+                if volume_num < MIN_VOLUME_USD:
+                    continue
+
+                # ------- СЛАГИ / ССЫЛКА НА МАРКЕТ -------
+                slug = m.get("slug") or ""
+                events = m.get("events") or []
+                event_slug = None
+                if isinstance(events, list) and events:
+                    event_slug = events[0].get("slug") or events[0].get("ticker")
+
+                if event_slug and slug:
+                    market_url = f"https://polymarket.com/event/{event_slug}/{slug}"
+                elif slug:
+                    market_url = f"https://polymarket.com/event/{slug}"
+                elif event_slug:
+                    market_url = f"https://polymarket.com/event/{event_slug}"
                 else:
-                    token_ids = token_ids_raw
+                    market_url = "https://polymarket.com"
+
+                # ------- TOKEN IDS -------
+                token_ids_raw = m.get("clobTokenIds") or m.get("clob_token_ids") or []
+                log(f"[main] Raw clobTokenIds: {token_ids_raw} (type={type(token_ids_raw)})")
+
+                token_ids: List[str] = []
+
+                if isinstance(token_ids_raw, list):
+                    token_ids = [str(t) for t in token_ids_raw]
+                elif isinstance(token_ids_raw, str):
+                    parsed = None
+                    try:
+                        parsed = json.loads(token_ids_raw)
+                        log(f"[main] json.loads(clobTokenIds) -> {parsed} (type={type(parsed)})")
+                    except Exception as e:
+                        log(f"[main] json.loads(clobTokenIds) не распарсил строку: {e}")
+
+                    if isinstance(parsed, list):
+                        token_ids = [str(t) for t in parsed]
+                    elif isinstance(parsed, str):
+                        token_ids = [parsed]
+                    else:
+                        token_ids = [token_ids_raw]
+                else:
+                    token_ids = []
+
+                if isinstance(token_ids, str):
+                    log(f"[main] WARNING: token_ids оказалась строкой, оборачиваем в список")
+                    token_ids = [token_ids]
 
                 if not token_ids:
                     continue
 
-                question = m.get("question") or m.get("slug") or "No title"
+                question = m.get("question") or slug or "No title"
                 market_id = m.get("id", "unknown")
-                log(f"[main] Маркет {market_id}, question='{question[:60]}', token_ids={token_ids}")
+                log(
+                    f"[main] Маркет {market_id}, "
+                    f"question='{question[:80]}', "
+                    f"volume≈{volume_num:.0f}, "
+                    f"token_ids={token_ids}, "
+                    f"url={market_url}"
+                )
 
                 for token_id in token_ids:
+                    token_id = str(token_id).strip()
+                    if len(token_id) < 10:
+                        log(f"[main] Пропускаем подозрительный token_id='{token_id}' (len < 10)")
+                        continue
+
                     now = time.time()
                     if token_id in last_alert_ts and now - last_alert_ts[token_id] < 300:
-                        # не спамим по одному и тому же токену чаще, чем раз в 5 минут
                         continue
 
                     ob = fetch_orderbook(token_id)
@@ -259,18 +321,29 @@ def main() -> None:
 
                     last_alert_ts[token_id] = now
 
+                    # лог с метой: название, объем, спред, ссылка
+                    log(
+                        f"[ALERT_META] '{question[:80]}' | "
+                        f"volume≈{volume_num:.0f} | "
+                        f"spread={(spread * 100):.2f}¢ | "
+                        f"url={market_url}"
+                    )
+
                     text = (
                         "📈 Найден спред на Polymarket\n\n"
-                        f"Маркет: {question}\n"
+                        f"{question}\n"
+                        f"{market_url}\n\n"
                         f"Gamma market id: {market_id}\n"
                         f"Token ID: `{token_id}`\n\n"
+                        f"Объем рынка (примерно): ${volume_num:,.0f}\n\n"
                         f"Bid: {bid:.3f} (liq ≈ {bid_size:.2f})\n"
                         f"Ask: {ask:.3f} (liq ≈ {ask_size:.2f})\n"
                         f"Спред: {(spread * 100):.2f}¢\n\n"
                         f"Твой банк: ${BANK_USD:.2f}\n"
                         f"Доступный объём под банк: {tradable_size:.2f} контрактов\n"
                         f"Оценочный профит за 1 цикл: ~${potential_profit:.2f}\n\n"
-                        "⚠️ Это только сигнал по спреду. Торговля руками и на свой риск."
+                        "⚠️ Это только сигнал по спреду. Торговля руками и на свой риск.\n"
+                        "***********************************"
                     )
 
                     log("[ALERT] " + text.replace("\n", " ")[:300] + "...")
