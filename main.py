@@ -4,6 +4,7 @@ import json
 import requests
 from typing import List, Dict, Any, Optional, Tuple
 
+
 # ================== ENV CONFIG ==================
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -46,14 +47,12 @@ def send_telegram_raw(text: str, parse_mode="MarkdownV2"):
 def log(msg: str):
     print(msg)
     if DEBUG_TO_TELEGRAM:
-        short = msg
-        if len(short) > 3500:
-            short = short[:3500] + "...(truncated)"
+        short = msg if len(msg) <= 3500 else msg[:3500] + "...(truncated)"
         send_telegram_raw(f"[DEBUG] {short}")
 
 
 def escape_md(text: str) -> str:
-    """Экранирование для Telegram MarkdownV2"""
+    """Экранирование для Telegram MarkdownV2."""
     for ch in r"_*[]()~`>#+-=|{}.!":
         text = text.replace(ch, f"\\{ch}")
     return text
@@ -63,12 +62,10 @@ def escape_md(text: str) -> str:
 
 def fetch_all_markets(max_pages=4) -> List[Dict[str, Any]]:
     all_markets = []
+
     for page in range(max_pages):
         offset = page * 150
-        params = {
-            "limit": 150,
-            "offset": offset,
-        }
+        params = {"limit": 150, "offset": offset}
         if ONLY_OPEN_MARKETS:
             params["closed"] = "false"
 
@@ -95,7 +92,7 @@ def fetch_all_markets(max_pages=4) -> List[Dict[str, Any]]:
         except Exception as e:
             log(f"[fetch_all_markets] Ошибка: {e}")
 
-        time.sleep(0.3)  # небольшой слип чтобы избежать throttle
+        time.sleep(0.3)  # anti-throttle pause
 
     log(f"[fetch_all_markets] Итог: получено {len(all_markets)} маркетов")
     return all_markets
@@ -173,3 +170,90 @@ def main():
             log(f"[main] Маркетов загружено: {len(markets)}")
 
             for m in markets:
+                volume = float(
+                    m.get("volumeNum")
+                    or m.get("volumeClob")
+                    or m.get("volume")
+                    or 0
+                )
+                if volume < MIN_VOLUME_USD:
+                    continue
+
+                slug = m.get("slug") or ""
+                events = m.get("events") or []
+                event_slug = events[0].get("slug") if events else ""
+
+                if slug and event_slug:
+                    market_url = f"https://polymarket.com/event/{event_slug}/{slug}"
+                else:
+                    market_url = "https://polymarket.com"
+
+                token_ids_raw = m.get("clobTokenIds") or []
+                if isinstance(token_ids_raw, str):
+                    try:
+                        token_ids_raw = json.loads(token_ids_raw)
+                    except:
+                        token_ids_raw = [token_ids_raw]
+
+                token_ids = [str(t) for t in token_ids_raw]
+
+                question = m.get("question") or slug or "Untitled"
+                market_id = m.get("id", "unknown")
+
+                for token_id in token_ids:
+                    if len(token_id) < 10:
+                        continue
+
+                    now = time.time()
+                    if token_id in last_alert and now - last_alert[token_id] < 300:
+                        continue
+
+                    ob = fetch_orderbook(token_id)
+                    if not ob:
+                        continue
+
+                    bid, ask, bid_size, ask_size = best_bid_ask(ob)
+                    if bid is None or ask is None:
+                        continue
+
+                    spread = ask - bid
+                    if spread < MIN_SPREAD:
+                        continue
+
+                    tradable = min(
+                        bid_size,
+                        ask_size,
+                        calc_max_size_for_bank(bid, BANK_USD),
+                        calc_max_size_for_bank(ask, BANK_USD),
+                    )
+
+                    potential_profit = tradable * spread
+                    if potential_profit < MIN_PROFIT_USD:
+                        continue
+
+                    last_alert[token_id] = now
+
+                    # ===================
+                    # TELEGRAM MESSAGE
+                    # ===================
+                    text = (
+                        "📈 Найден спред на Polymarket\n"
+                        f"**[{escape_md(question)}]({market_url})**\n\n"
+                        f"Объём: ${volume:,.0f}\n"
+                        f"**Спред: {(spread * 100):.2f}¢**\n\n"
+                        f"Оценочный профит за 1 цикл: **${potential_profit:.2f}**\n\n"
+                        "**************************************************"
+                    )
+
+                    send_telegram_raw(text)
+
+            log(f"[main] Цикл завершён, пауза {POLL_INTERVAL} сек...")
+            time.sleep(POLL_INTERVAL)
+
+        except Exception as e:
+            log(f"[main] Ошибка цикла: {e}")
+            time.sleep(POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()
