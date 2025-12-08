@@ -13,7 +13,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 BANK_USD = float(os.environ.get("BANK_USD", "980"))
 MIN_SPREAD = float(os.environ.get("MIN_SPREAD", "0.03"))
 MIN_PROFIT_USD = float(os.environ.get("MIN_PROFIT_USD", "10"))
-MIN_VOLUME_USD = float(os.environ.get("MIN_VOLUME_USD", "1000000"))
+MIN_VOLUME_USD = float(os.environ.get("MIN_VOLUME_USD", "100000"))
 
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "300"))  # 5 минут
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "4"))  # 4 страницы × 150 = 600 маркетов
